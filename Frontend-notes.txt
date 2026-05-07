@@ -1,0 +1,136 @@
+Content Broadcasting System — Frontend Notes
+=============================================
+
+1) Project Structure
+--------------------
+src/
+  components/   Reusable UI building blocks. Stateless or with minimal local state.
+                - Sidebar, Topbar (shell)
+                - ContentCard (memoized) — used by teacher/principal lists
+                - Modal, EmptyState, Skeleton, StatCard, StatusBadge, ProtectedRoute
+  context/      Cross-cutting providers
+                - AuthContext: holds current user, exposes login/logout
+                - ThemeContext: light/dark toggle persisted to localStorage
+  hooks/        useDebounce (used for search inputs)
+  layouts/      AppLayout — Sidebar + Topbar shell wrapping protected routes
+  pages/        Route-level components. One file per route. Pages call
+                services via React Query — never directly touch fetch/axios.
+                - auth/LoginPage
+                - teacher/{TeacherDashboard, UploadContent, MyContent}
+                - principal/{PrincipalDashboard, PendingApprovals, AllContent}
+                - public/LivePage (no auth)
+  services/     Service layer — single source of truth for API calls
+                - http.js          axios instance, token interceptor, base URL
+                - auth.service.js  login/logout/getCurrentUser
+                - content.service.js  list/stats/create/getActiveForTeacher
+                - approval.service.js  approve/reject
+                - mock/db.js       seed + localStorage CRUD (drop-in replaceable)
+  utils/        format.js (date, status colors, schedule state),
+                validators.js (zod schemas: login, upload, reject)
+
+Separation of concerns
+  - Components never call fetch/axios directly.
+  - Pages compose components and call services via React Query hooks.
+  - Services own all I/O (mock today, real HTTP tomorrow).
+  - Validation lives in utils/validators.js — reusable across pages.
+
+2) Authentication Flow
+----------------------
+- Login form (RHF + Zod) calls authService.login.
+- On success the service stores:
+    cbs_token  → localStorage
+    cbs_user   → localStorage (id, name, email, role only — no password)
+- AuthContext hydrates from localStorage on mount and exposes { user, login, logout }.
+- The axios client (services/http.js) attaches the bearer token automatically
+  to every request, and clears the token on a 401 response.
+- Logout clears storage and redirects to /login.
+
+3) Role-Based Routing
+---------------------
+- ProtectedRoute is a wrapper using <Outlet/>. It accepts roles=['teacher'] etc.
+  - Not authenticated → redirect to /login (preserves intended path in state).
+  - Wrong role       → redirect to that user's home (/teacher or /principal).
+- Login redirects authenticated users away from /login.
+- Public routes (/live/:teacherId) are outside the protected tree.
+
+4) API Integration Approach
+---------------------------
+- React Query (TanStack) handles caching, loading, error, and polling.
+- Query keys are role/filter aware (e.g. ['content', 'teacher', userId, status, search]).
+- Mutations (upload / approve / reject) invalidate ['content'] and ['stats']
+  to keep dashboards fresh.
+- Live page uses refetchInterval: 15s for auto-refresh; rotation across
+  multiple active items uses an interval driven by the active item's
+  rotationDuration field.
+- Replaceable design: each service method has a single responsibility.
+  Replace the mock body with http.get/post — no other code needs to change.
+
+5) State Management Approach
+----------------------------
+- Server/cache state    → React Query (no Redux needed).
+- Auth state            → AuthContext (small, global, rarely changes).
+- Theme state           → ThemeContext.
+- Form state            → React Hook Form (uncontrolled, performant).
+- Local UI state        → useState within the page (filters, modal open, page).
+- Avoided prop drilling by colocating state at the page level and passing
+  small, focused props to ContentCard.
+
+6) Form Handling & Validation
+-----------------------------
+- Login: required + email format.
+- Upload: title/subject/file/start/end required; rotationDuration > 0;
+  file must be JPG/PNG/GIF and ≤ 10MB; endTime > startTime (cross-field).
+- Reject modal: reason required (≥ 3 chars).
+- Errors shown inline; toasts for global success/failure feedback.
+
+7) File Upload UI
+-----------------
+- Drag-and-drop zone + Choose-file button.
+- Live image preview (FileReader).
+- Validation runs on selection AND on submit (zod).
+- File is stored in the mock DB as a data URL so previews work after reload.
+
+8) Performance
+--------------
+- ContentCard is React.memo'd to avoid re-renders on parent state changes.
+- Search input debounced (250ms).
+- Pagination on All Content (12 items / page) handles 500–1000 simulated rows.
+- Images use loading="lazy".
+- React Query staleTime = 30s reduces refetch noise.
+
+9) Empty / Error / Loading States
+---------------------------------
+- Skeletons (CardSkeleton) for initial loads.
+- EmptyState component for no-data and error scenarios.
+- Toasts for transient errors (login failure, upload failure, etc.).
+- Live page: dedicated empty ("No content available") and error views.
+
+10) Schedule UI Logic
+---------------------
+getScheduleState(content) computes one of:
+  - scheduled (now < startTime)
+  - active    (startTime ≤ now ≤ endTime)
+  - expired   (now > endTime)
+Rendered as a ScheduleBadge alongside the approval StatusBadge.
+
+11) Assumptions
+---------------
+- Files are images only (JPG/PNG/GIF) per spec; demo previews use SVG data URLs.
+- Mock DB lives in localStorage; clearing the browser storage resets demo data.
+- "Live" content for a teacher = their approved items whose start/end window
+  contains "now".
+- Token format is mocked; the real backend is expected to issue a JWT and the
+  axios interceptor will forward it as `Authorization: Bearer <token>`.
+- Polling interval (15s) and rotation default (10s) are reasonable defaults
+  and can be tuned per content via rotationDuration.
+
+12) Bonus Features Implemented
+------------------------------
+- TanStack React Query
+- Dark mode toggle
+- Drag-and-drop upload
+- Pagination on All Content
+- Polling / auto-refresh on Live page
+- Skeleton loaders
+- Protected role-based routes
+- Reusable components (StatCard, ContentCard, Modal, EmptyState, StatusBadge)
